@@ -1,0 +1,20 @@
+# PyTorch & Computer Vision (CPU-optimized)
+torch>=2.2.0
+torchvision>=0.17.0
+
+# Transformers & Hugging Face (SigLIP 2)
+transformers>=4.48.0
+pillow>=10.2.0
+
+# Google GenAI Official SDK (Gemma 4 Multimodal Reasoner)
+google-genai>=1.0.0
+
+# Web Framework & Validation
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.0
+pydantic>=2.7.0
+python-multipart>=0.0.9
+python-dotenv>=1.0.1
+
+# Numerical Computing & Scientific
+numpy>=1.26.0
