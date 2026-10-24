@@ -65,12 +65,24 @@ export async function searchVault(query: string): Promise<{
   return res.json();
 }
 
-export async function fetchVaultItems(status?: string): Promise<{
+export async function fetchVaultItems(status?: string, category?: string): Promise<{
   count: number;
   items: VaultItem[];
 }> {
-  const url = status ? `${API_BASE}/vault/items?status=${status}` : `${API_BASE}/vault/items`;
+  const params = new URLSearchParams();
+  if (status && status !== 'all') params.append('status', status);
+  if (category && category !== 'all') params.append('category', category);
+
+  const url = `${API_BASE}/vault/items?${params.toString()}`;
   const res = await fetch(url);
   if (!res.ok) throw new Error('Failed to fetch vault items');
+  return res.json();
+}
+
+export async function fetchCategories(): Promise<{
+  categories: Record<string, number>;
+}> {
+  const res = await fetch(`${API_BASE}/vault/categories`);
+  if (!res.ok) throw new Error('Failed to fetch categories');
   return res.json();
 }

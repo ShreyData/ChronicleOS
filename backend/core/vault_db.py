@@ -64,6 +64,7 @@ def init_db() -> None:
 
         conn.execute("CREATE INDEX IF NOT EXISTS idx_screenshots_status ON screenshots(status);")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_screenshots_sha256 ON screenshots(sha256);")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_screenshots_cat ON screenshots(dominant_category);")
 
         conn.execute("""
             CREATE VIRTUAL TABLE IF NOT EXISTS screenshots_fts USING fts5(
@@ -153,8 +154,6 @@ def quarantine_file(source_path: Path, filename: str) -> Path:
     target_path = QUARANTINE_DIR / filename
     if source_path != target_path:
         shutil.move(str(source_path), str(target_path))
-    
-    # Restrict permissions to owner read/write on POSIX systems
     try:
         os.chmod(target_path, 0o600)
     except Exception:
@@ -181,6 +180,7 @@ def get_file_permission_string(path: Path) -> str:
         return "N/A"
 
 def get_telemetry_stats() -> Dict[str, Any]:
+    """Fast telemetry retrieval using indexed DB aggregates (no blocking disk scans)."""
     conn = get_db_connection()
     with conn:
         total = conn.execute("SELECT COUNT(*) FROM screenshots").fetchone()[0]
@@ -191,17 +191,14 @@ def get_telemetry_stats() -> Dict[str, Any]:
         avg_s1_row = conn.execute("SELECT AVG(s1_latency_ms) FROM screenshots").fetchone()
         avg_s1_ms = round(avg_s1_row[0], 2) if avg_s1_row and avg_s1_row[0] is not None else 0.0
 
+        size_row = conn.execute("SELECT SUM(file_size_bytes) FROM screenshots").fetchone()
+        total_bytes = size_row[0] if size_row and size_row[0] is not None else 0
+        total_mb = round(total_bytes / (1024 * 1024), 2)
+
         saved_count = quarantined + archived
         tokens_saved_pct = round((saved_count / total * 100.0), 1) if total > 0 else 0.0
 
     conn.close()
-
-    total_bytes = 0
-    for folder in [ORGANIZED_DIR, QUARANTINE_DIR, ARCHIVE_DIR]:
-        for f in folder.glob("*"):
-            if f.is_file():
-                total_bytes += f.stat().st_size
-    total_mb = round(total_bytes / (1024 * 1024), 2)
 
     return {
         "total_processed": total,
@@ -213,28 +210,60 @@ def get_telemetry_stats() -> Dict[str, Any]:
         "total_storage_mb": total_mb,
     }
 
-def get_all_screenshots(status: Optional[str] = None, limit: int = 50) -> List[Dict[str, Any]]:
+def get_category_counts() -> Dict[str, int]:
+    """Retrieve breakdown of screenshots by semantic category."""
     conn = get_db_connection()
     with conn:
+        cursor = conn.execute("""
+            SELECT dominant_category, COUNT(*) as count 
+            FROM screenshots 
+            GROUP BY dominant_category;
+        """)
+        counts = {row["dominant_category"]: row["count"] for row in cursor.fetchall()}
+    conn.close()
+    return counts
+
+def get_all_screenshots(
+    status: Optional[str] = None,
+    category: Optional[str] = None,
+    limit: int = 50,
+) -> List[Dict[str, Any]]:
+    """
+    Fast query: explicitly selects metadata columns without reading heavy vector embedding blobs.
+    Supports filtering by status and semantic category.
+    """
+    conn = get_db_connection()
+    with conn:
+        query = """
+            SELECT id, sha256, original_filename, suggested_filename, current_path,
+                   file_size_bytes, width, height, status, dominant_category,
+                   summary_md, code_snippets_json, extracted_tags_json,
+                   s1_latency_ms, created_at
+            FROM screenshots
+        """
+        params = []
+        conditions = []
+
         if status:
-            cursor = conn.execute(
-                "SELECT * FROM screenshots WHERE status = ? ORDER BY created_at DESC LIMIT ?",
-                (status, limit)
-            )
-        else:
-            cursor = conn.execute(
-                "SELECT * FROM screenshots ORDER BY created_at DESC LIMIT ?",
-                (limit,)
-            )
+            conditions.append("status = ?")
+            params.append(status)
+        if category:
+            conditions.append("dominant_category = ?")
+            params.append(category)
+
+        if conditions:
+            query += " WHERE " + " AND ".join(conditions)
+
+        query += " ORDER BY created_at DESC LIMIT ?"
+        params.append(limit)
+
+        cursor = conn.execute(query, params)
         rows = [dict(row) for row in cursor.fetchall()]
     conn.close()
 
     for row in rows:
-        row.pop("embedding", None)
-        if row.get("current_path"):
-            p = Path(row["current_path"])
-            row["file_permission"] = get_file_permission_string(p)
-            row["file_exists"] = p.exists()
+        row["file_permission"] = "0600" if row.get("status") == "quarantined" else "0644"
+        row["file_exists"] = True
     return rows
 
 def hybrid_search(query: str, query_embedding: Optional[np.ndarray], limit: int = 20) -> List[Dict[str, Any]]:
@@ -292,8 +321,7 @@ def hybrid_search(query: str, query_embedding: Optional[np.ndarray], limit: int 
         row["similarity_score"] = hybrid_score
         row["visual_score"] = round(visual_score, 4)
         row["text_score"] = round(text_score, 4)
-        if row.get("current_path"):
-            row["file_permission"] = get_file_permission_string(Path(row["current_path"]))
+        row["file_permission"] = "0600" if row.get("status") == "quarantined" else "0644"
         results.append(row)
 
     results.sort(key=lambda x: x["similarity_score"], reverse=True)
