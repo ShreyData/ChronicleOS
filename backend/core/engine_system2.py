@@ -91,12 +91,15 @@ class System2Engine:
     ) -> System2Result:
         start_time = time.perf_counter()
 
+        thinking_level = "DEFAULT"
+        thinking_level_enum = None
+
         if dominant_cat in ["code_bug_or_terminal", "architecture_or_slide"]:
-            thinking_level = "high"
+            thinking_level = "HIGH"
+            thinking_level_enum = "HIGH"
         elif dominant_cat == "receipt_or_invoice":
-            thinking_level = "minimal"
-        else:
-            thinking_level = "none"
+            thinking_level = "MINIMAL"
+            thinking_level_enum = "MINIMAL"
 
         if not self.client:
             fallback = self._generate_local_fallback(dominant_cat, original_filename)
@@ -125,16 +128,31 @@ class System2Engine:
                 "response_mime_type": "application/json",
                 "response_schema": System2AnalysisResponse,
             }
-            try:
-                config_kwargs["thinking_config"] = types.ThinkingConfig(thinking_level=thinking_level)
-            except Exception:
-                pass
 
-            response = self.client.models.generate_content(
-                model=SYSTEM2_MODEL_ID,
-                contents=[resized_image, prompt],
-                config=types.GenerateContentConfig(**config_kwargs),
-            )
+            # Only configure thinking_config if a valid level is set (HIGH or MINIMAL)
+            if thinking_level_enum:
+                try:
+                    config_kwargs["thinking_config"] = types.ThinkingConfig(thinking_level=thinking_level_enum)
+                except Exception:
+                    pass
+
+            try:
+                response = self.client.models.generate_content(
+                    model=SYSTEM2_MODEL_ID,
+                    contents=[resized_image, prompt],
+                    config=types.GenerateContentConfig(**config_kwargs),
+                )
+            except Exception as call_err:
+                # If model does not support thinking_config, retry without it
+                if "thinking" in str(call_err).lower() and "thinking_config" in config_kwargs:
+                    config_kwargs.pop("thinking_config", None)
+                    response = self.client.models.generate_content(
+                        model=SYSTEM2_MODEL_ID,
+                        contents=[resized_image, prompt],
+                        config=types.GenerateContentConfig(**config_kwargs),
+                    )
+                else:
+                    raise call_err
 
             parsed = json.loads(response.text)
             analysis_resp = System2AnalysisResponse(**parsed)

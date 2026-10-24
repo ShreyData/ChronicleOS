@@ -10,6 +10,8 @@ from backend.core.config import (
     PORT,
 )
 from backend.core.vault_db import init_db
+from backend.core.engine_system1 import System1Engine
+from backend.core.engine_system2 import System2Engine
 from backend.api.routes_ingest import router as ingest_router
 from backend.api.routes_search import router as search_router
 from backend.api.routes_vault import router as vault_router
@@ -17,6 +19,12 @@ from backend.api.routes_vault import router as vault_router
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
+    # Pre-warm System 1 and System 2 on startup to eliminate cold-start request latency
+    try:
+        System1Engine.get_instance()
+        System2Engine.get_instance()
+    except Exception as e:
+        print(f"Warning during engine pre-warming: {e}")
     yield
 
 app = FastAPI(
@@ -65,4 +73,10 @@ else:
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("backend.main:app", host=HOST, port=PORT, reload=True)
+    uvicorn.run(
+        "backend.main:app",
+        host=HOST,
+        port=PORT,
+        reload=True,
+        reload_excludes=["vault/*", "*.db*", "*.db-wal", "*.db-shm", "frontend/*"],
+    )
